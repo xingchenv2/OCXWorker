@@ -35,26 +35,27 @@
 
 ## 当前版本
 
-**v1.1.7** (2026-06-16)
+**v2.0.0** (2026-06-16)
 
-### v1.1.7 更新内容
+### v2.0.0 更新内容
 
 - **修复：更新检查 JAR 路径** — 系统更新页面现在正确检测当前 JAR 为 `/opt/ocx-worker/ocx-worker.jar`（之前查找的是 `oci-worker.jar`，导致显示「未找到」）
-- **修复：动态更新资源名称** — 一键更新现在从最新 GitHub Release 动态解析正确的 JAR 文件名，不再使用硬编码的 `oci-worker-1.0.0.jar` 占位符
+- **修复：动态更新资源名称** — 一键更新现在从最新 GitHub Release 动态解析正确的 JAR 文件名（`ASSET="ocx-worker-${TAG#v}.jar"`），不再使用硬编码占位符
 - **修复：更新脚本服务名称** — 更新脚本现在正确重启 `ocx-worker` 服务（之前为 `oci-worker`）
 - **修复：备份文件命名** — 备份下载和恢复文件名更新为 `ocx-worker-backup.zip`
 - **修复：TG 解绑命令** — Web UI Telegram 解绑提示现在显示正确的 `sudo ocx tg-clean` 命令
-- **安装器版本升级至 v1.1.7**
+- **修复：前端 JS 版本显示** — 「当前版本」现在显示版本号（如 v2.0.0）和文件大小，而非 commit hash + (未找到)
+- **修复：后端版本检测** — `build-commit.txt` 现在存储版本标签（如 `v2.0.0`），确保与 GitHub Release tag 进行正确的版本对比
 
 ### 下载
 
 | 文件 | 说明 |
 |------|------|
-| [`ocx-worker-1.1.7.jar`](https://github.com/xingchenv2/OCX-worker/releases/download/v1.1.7/ocx-worker-1.1.7.jar) (≈100 MB) | 应用主程序 |
-| [`install.sh`](https://github.com/xingchenv2/OCX-worker/releases/download/v1.1.7/install.sh) | v2 智能安装器 |
-| [`ocx`](https://github.com/xingchenv2/OCX-worker/releases/download/v1.1.7/ocx) | 管理 CLI 脚本 |
-| [`SHA256SUMS`](https://github.com/xingchenv2/OCX-worker/releases/download/v1.1.7/SHA256SUMS) | SHA256 校验和 |
-| [`INSTALL_COMMANDS.txt`](https://github.com/xingchenv2/OCX-worker/releases/download/v1.1.7/INSTALL_COMMANDS.txt) | 安装命令速查 |
+| [`ocx-worker-2.0.0.jar`](https://github.com/xingchenv2/OCX-worker/releases/download/v2.0.0/ocx-worker-2.0.0.jar) (≈100 MB) | 应用主程序 |
+| [`install.sh`](https://github.com/xingchenv2/OCX-worker/releases/download/v2.0.0/install.sh) | v2 智能安装器 |
+| [`ocx`](https://github.com/xingchenv2/OCX-worker/releases/download/v2.0.0/ocx) | 管理 CLI 脚本 |
+| [`SHA256SUMS`](https://github.com/xingchenv2/OCX-worker/releases/download/v2.0.0/SHA256SUMS) | SHA256 校验和 |
+| [`INSTALL_COMMANDS.txt`](https://github.com/xingchenv2/OCX-worker/releases/download/v2.0.0/INSTALL_COMMANDS.txt) | 安装命令速查 |
 
 ---
 
