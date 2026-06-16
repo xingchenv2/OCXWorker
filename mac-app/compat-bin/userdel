@@ -1,0 +1,68 @@
+#!/bin/bash
+# ──────────────────────────────────────────────────────────────
+# userdel — macOS compat wrapper for OCX Worker
+#
+# Linux `userdel [-r] [-f] <username>`
+#   -r  remove home directory and mail spool
+#   -f  force removal even if user is logged in
+# macOS: use dscl to delete user + directory removal
+# ──────────────────────────────────────────────────────────────
+set -euo pipefail
+
+REMOVE_HOME=false
+FORCE=false
+TARGET_USER=""
+
+while getopts "rf" opt 2>/dev/null; do
+    case "$opt" in
+        r) REMOVE_HOME=true ;;
+        f) FORCE=true ;;
+        *) echo "userdel (macOS compat): unknown option -$opt" >&2; exit 1 ;;
+    esac
+done
+shift $((OPTIND - 1))
+
+TARGET_USER="${1:-}"
+
+if [ -z "$TARGET_USER" ]; then
+    echo "userdel (macOS compat): missing username" >&2
+    exit 1
+fi
+
+# Don't allow deleting critical system users
+case "$TARGET_USER" in
+    root|daemon|nobody|_*) echo "userdel (macOS compat): refusing to delete system user '$TARGET_USER'" >&2; exit 1 ;;
+esac
+
+# Kill user processes if -f
+if [ "$FORCE" = true ]; then
+    pkill -9 -u "$TARGET_USER" 2>/dev/null || true
+fi
+
+# Check if user exists
+if ! dscl . -read "/Users/$TARGET_USER" NFSHomeDirectory &>/dev/null; then
+    echo "userdel (macOS compat): user '$TARGET_USER' does not exist" >&2
+    exit 6  # Linux userdel exits 6 for "user not found"
+fi
+
+# Get home directory before deleting user
+HOME_DIR=""
+if [ "$REMOVE_HOME" = true ]; then
+    HOME_DIR=$(dscl . -read "/Users/$TARGET_USER" NFSHomeDirectory 2>/dev/null | awk '{print $2}' || echo "")
+fi
+
+# Delete user from Directory Service
+dscl . -delete "/Users/$TARGET_USER" 2>/dev/null || {
+    echo "userdel (macOS compat): failed to delete user '$TARGET_USER'" >&2
+    exit 1
+}
+
+# Remove home directory
+if [ "$REMOVE_HOME" = true ] && [ -n "$HOME_DIR" ] && [ -d "$HOME_DIR" ]; then
+    rm -rf "$HOME_DIR" 2>/dev/null || true
+fi
+
+# Remove mail spool (macOS location)
+rm -rf "/var/mail/$TARGET_USER" 2>/dev/null || true
+
+exit 0

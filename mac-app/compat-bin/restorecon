@@ -1,0 +1,9 @@
+#!/bin/bash
+# ──────────────────────────────────────────────────────────────
+# restorecon — macOS compat wrapper for OCX Worker
+#
+# Linux `restorecon` restores SELinux security contexts.
+# macOS has no SELinux, so this is a no-op.
+# ──────────────────────────────────────────────────────────────
+# Accept any arguments, do nothing, exit successfully
+exit 0

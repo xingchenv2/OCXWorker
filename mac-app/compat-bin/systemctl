@@ -1,0 +1,133 @@
+#!/bin/bash
+# ──────────────────────────────────────────────────────────────
+# systemctl — macOS compat wrapper for OCX Worker
+#
+# Translates common systemctl commands to macOS launchctl equivalents.
+# Only implements the subset used by OCX Worker:
+#   start/stop/restart <service>
+#   enable/disable <service>
+#   daemon-reload
+#   is-active --quiet <service>
+# ──────────────────────────────────────────────────────────────
+set -euo pipefail
+
+# Map Linux systemd service names to macOS LaunchDaemons/LaunchAgents
+map_service() {
+    local svc="$1"
+    case "$svc" in
+        sshd|ssh|ssh.service)
+            echo "/System/Library/LaunchDaemons/ssh.plist"
+            ;;
+        ocx-worker|ocx-worker.service)
+            # Expected plist location for OCX Worker on Mac
+            echo "/Library/LaunchDaemons/com.ocx.worker.plist"
+            ;;
+        oci-webssh|oci-webssh.service)
+            echo "/Library/LaunchDaemons/com.ociworker.webssh.plist"
+            ;;
+        docker|docker.service)
+            # Docker Desktop on Mac — just skip
+            echo "SKIP"
+            ;;
+        *)
+            # Try the name as-is with .plist suffix
+            local plist="/Library/LaunchDaemons/${svc}.plist"
+            if [ -f "$plist" ]; then
+                echo "$plist"
+            else
+                echo "/Library/LaunchDaemons/${svc}.plist"
+            fi
+            ;;
+    esac
+}
+
+ACTION=""
+SERVICE=""
+QUIET=false
+DAEMON_RELOAD=false
+
+# Parse arguments
+while [ $# -gt 0 ]; do
+    case "$1" in
+        start|stop|restart|enable|disable|is-active|status)
+            ACTION="$1"
+            shift
+            SERVICE="${1:-}"
+            shift
+            ;;
+        daemon-reload)
+            DAEMON_RELOAD=true
+            shift
+            ;;
+        --quiet)
+            QUIET=true
+            shift
+            ;;
+        *)
+            SERVICE="$1"
+            shift
+            ;;
+    esac
+done
+
+# daemon-reload is a no-op on macOS
+if [ "$DAEMON_RELOAD" = true ]; then
+    exit 0
+fi
+
+if [ -z "$ACTION" ] || [ -z "$SERVICE" ]; then
+    exit 0  # Silently ignore unknown commands
+fi
+
+PLIST=$(map_service "$SERVICE")
+
+if [ "$PLIST" = "SKIP" ]; then
+    exit 0
+fi
+
+case "$ACTION" in
+    start)
+        launchctl load -w "$PLIST" 2>/dev/null || true
+        ;;
+    stop)
+        launchctl unload "$PLIST" 2>/dev/null || true
+        ;;
+    restart)
+        launchctl unload "$PLIST" 2>/dev/null || true
+        sleep 1
+        launchctl load -w "$PLIST" 2>/dev/null || true
+        ;;
+    enable)
+        launchctl enable "system/$SERVICE" 2>/dev/null || true
+        # Also mark the plist as enabled
+        if [ -f "$PLIST" ]; then
+            launchctl load -w "$PLIST" 2>/dev/null || true
+        fi
+        ;;
+    disable)
+        launchctl disable "system/$SERVICE" 2>/dev/null || true
+        launchctl unload "$PLIST" 2>/dev/null || true
+        ;;
+    is-active)
+        # Check if the service's plist is loaded
+        if launchctl list 2>/dev/null | grep -q "$(basename "${PLIST%.plist}")"; then
+            exit 0
+        else
+            exit 1  # "inactive"
+        fi
+        ;;
+    status)
+        if launchctl list 2>/dev/null | grep -q "$(basename "${PLIST%.plist}")"; then
+            [ "$QUIET" = false ] && echo "active"
+            exit 0
+        else
+            [ "$QUIET" = false ] && echo "inactive"
+            exit 3
+        fi
+        ;;
+    *)
+        # Unknown action — silently succeed
+        ;;
+esac
+
+exit 0

@@ -1,0 +1,52 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  com.ocx.worker.plist — macOS LaunchDaemon for OCX Worker
+  
+  Install:  sudo cp com.ocx.worker.plist /Library/LaunchDaemons/
+            sudo launchctl load -w /Library/LaunchDaemons/com.ocx.worker.plist
+  
+  Uninstall: sudo launchctl unload /Library/LaunchDaemons/com.ocx.worker.plist
+             sudo rm /Library/LaunchDaemons/com.ocx.worker.plist
+  
+  This runs OCX Worker as a background service on macOS,
+  equivalent to the systemd unit on Linux.
+-->
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.ocx.worker</string>
+
+    <key>ProgramArguments</key>
+    <array>
+        <string>/Applications/OCX Worker.app/Contents/MacOS/launch.sh</string>
+    </array>
+
+    <key>RunAtLoad</key>
+    <true/>
+
+    <key>KeepAlive</key>
+    <true/>
+
+    <key>StandardOutPath</key>
+    <string>/tmp/ocx-worker-stdout.log</string>
+
+    <key>StandardErrorPath</key>
+    <string>/tmp/ocx-worker-stderr.log</string>
+
+    <key>EnvironmentVariables</key>
+    <dict>
+        <key>PATH</key>
+        <string>/Applications/OCX Worker.app/Contents/Resources/compat-bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
+    </dict>
+
+    <key>WorkingDirectory</key>
+    <string>/Applications/OCX Worker.app/Contents/Resources/app</string>
+
+    <key>UserName</key>
+    <string>root</string>
+
+    <key>GroupName</key>
+    <string>wheel</string>
+</dict>
+</plist>

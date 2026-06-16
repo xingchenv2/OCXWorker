@@ -1,0 +1,9 @@
+#!/bin/bash
+# ──────────────────────────────────────────────────────────────
+# getenforce — macOS compat wrapper for OCX Worker
+#
+# Linux `getenforce` returns Enforcing/Permissive/Disabled.
+# macOS has no SELinux, always report "Disabled".
+# ──────────────────────────────────────────────────────────────
+echo "Disabled"
+exit 0
