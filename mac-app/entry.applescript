@@ -155,11 +155,11 @@ on createMenuBar()
     set topItem to current application's NSMenuItem's alloc()'s initWithTitle:"macOS OCX" action:(missing value) keyEquivalent:""
     topItem's setSubmenu:subMenu
     
-    subMenu's addItem:((current application's NSMenuItem's alloc()'s initWithTitle:"关于 macOS OCX" action:"orderFrontStandardAboutPanel:" keyEquivalent:""))
+    subMenu's addItem:(current application's NSMenuItem's alloc()'s initWithTitle:"关于 macOS OCX" action:"orderFrontStandardAboutPanel:" keyEquivalent:"")
     subMenu's addItem:(current application's NSMenuItem's separatorItem())
-    subMenu's addItem:((current application's NSMenuItem's alloc()'s initWithTitle:"隐藏 macOS OCX" action:"hide:" keyEquivalent:"h"))
-    subMenu's addItem:((current application's NSMenuItem's separatorItem())
-    subMenu's addItem:((current application's NSMenuItem's alloc()'s initWithTitle:"退出 macOS OCX" action:"terminate:" keyEquivalent:"q"))
+    subMenu's addItem:(current application's NSMenuItem's alloc()'s initWithTitle:"隐藏 macOS OCX" action:"hide:" keyEquivalent:"h")
+    subMenu's addItem:(current application's NSMenuItem's separatorItem())
+    subMenu's addItem:(current application's NSMenuItem's alloc()'s initWithTitle:"退出 macOS OCX" action:"terminate:" keyEquivalent:"q")
     
     mainMenu's addItem:topItem
     NSApp's setMainMenu:mainMenu

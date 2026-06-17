@@ -16,7 +16,7 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 APP_NAME="macOS OCX"
-APP_VERSION="2.0.6"
+APP_VERSION="2.0.7"
 BUNDLE_ID="com.ocx.worker"
 SERVER_PORT=8818
 
@@ -51,9 +51,9 @@ echo ""
 rm -rf "$OUTPUT_DIR"
 mkdir -p "${APP_DIR}/Contents/MacOS"
 mkdir -p "${APP_DIR}/Contents/Resources/app"
-mkdir -p "${APP_DIR}/Contents/Resources/data/keys"
-mkdir -p "${APP_DIR}/Contents/Resources/data/logs"
-mkdir -p "${APP_DIR}/Contents/Resources/data/backups"
+# Data dirs are NOT inside .app bundle — Gatekeeper makes .app read-only
+# Data goes to ~/Library/Application Support/macOS OCX/ at runtime
+# We only create the compat-bin and runtime dirs here
 mkdir -p "${APP_DIR}/Contents/Resources/compat-bin"
 mkdir -p "${APP_DIR}/Contents/Resources/runtime-arm64"
 mkdir -p "${APP_DIR}/Contents/Resources/runtime-x64"
@@ -150,6 +150,16 @@ build_arch() {
                 CACHE_FILE="${dir}/zulu-jre21-mac-${ARCH}.tar.gz"
                 break
             fi
+            # Also check alternate naming (aarch64 vs arm64)
+            local ALT_ARCH=""
+            case "$ARCH" in
+                arm64) ALT_ARCH="aarch64" ;;
+                x64)   ALT_ARCH="x86_64" ;;
+            esac
+            if [ -n "$ALT_ARCH" ] && [ -f "${dir}/zulu-jre21-mac-${ALT_ARCH}.tar.gz" ]; then
+                CACHE_FILE="${dir}/zulu-jre21-mac-${ALT_ARCH}.tar.gz"
+                break
+            fi
         done
 
         if [ -n "$CACHE_FILE" ]; then
@@ -179,8 +189,8 @@ else
 fi
 
 # ── 8. Secure permissions ──────────────────────────────────────
-chmod 700 "${APP_DIR}/Contents/Resources/data" 2>/dev/null || true
-chmod 700 "${APP_DIR}/Contents/Resources/data/keys" 2>/dev/null || true
+# Data dirs no longer inside .app — no permissions to set here
+# Permissions are set at runtime on ~/Library/Application Support/macOS OCX/
 
 # ── Summary ────────────────────────────────────────────────────
 echo ""
@@ -189,7 +199,7 @@ echo "   Location: ${APP_DIR}"
 echo "   Size:    $(du -sh "$APP_DIR" | cut -f1)"
 echo ""
 echo "   双击 ${APP_NAME}.app 即可使用"
-echo "   ✅ 原生窗口（首次运行自动编译，之后直接使用）"
+echo "   ✅ 数据目录: ~/Library/Application Support/macOS OCX/"
 echo "   ✅ 无需浏览器、无需安装 Java"
 
 # ── 9. Zip for distribution ────────────────────────────────────
