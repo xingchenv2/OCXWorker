@@ -54,12 +54,16 @@ mkdir -p "${APP_DIR}/Contents/Resources/data/logs"
 mkdir -p "${APP_DIR}/Contents/Resources/data/backups"
 mkdir -p "${APP_DIR}/Contents/Resources/compat-bin"
 
-# ── 1. Copy entry point (AppleScript) ──────────────────────────
-echo "📝 Setting up AppleScript native window..."
+# ── 1. Copy main entry point (MacOSOCX shell wrapper) ────────
+echo "📝 Setting up native window entry point..."
+cp "${SCRIPT_DIR}/MacOSOCX" "${APP_DIR}/Contents/MacOS/MacOSOCX"
+chmod +x "${APP_DIR}/Contents/MacOS/MacOSOCX"
+
+# ── 2. Copy AppleScript native window ──────────────────────────
 cp "${SCRIPT_DIR}/entry.applescript" "${APP_DIR}/Contents/MacOS/entry.applescript"
 chmod +x "${APP_DIR}/Contents/MacOS/entry.applescript"
 
-# ── 2. Copy backend launcher ───────────────────────────────────
+# ── 3. Copy backend launcher ───────────────────────────────────
 echo "📦 Copying backend launcher..."
 cp "${SCRIPT_DIR}/launch-backend.sh" "${APP_DIR}/Contents/MacOS/"
 chmod +x "${APP_DIR}/Contents/MacOS/launch-backend.sh"
@@ -88,7 +92,7 @@ cp "${SCRIPT_DIR}/compat-bin/"* "${APP_DIR}/Contents/Resources/compat-bin/"
 chmod +x "${APP_DIR}/Contents/Resources/compat-bin/"*
 cp "${SCRIPT_DIR}/com.ocx.worker.plist" "${APP_DIR}/Contents/Resources/"
 
-# ── 6. Info.plist — CFBundleExecutable = entry.applescript ─────
+# ── 6. Info.plist — CFBundleExecutable = MacOSOCX ─────────────
 echo "📝 Writing Info.plist..."
 cat > "${APP_DIR}/Contents/Info.plist" << PLISTEOF
 <?xml version="1.0" encoding="UTF-8"?>
@@ -100,7 +104,7 @@ cat > "${APP_DIR}/Contents/Info.plist" << PLISTEOF
     <key>CFBundleDisplayName</key>
     <string>${APP_NAME}</string>
     <key>CFBundleExecutable</key>
-    <string>entry.applescript</string>
+    <string>MacOSOCX</string>
     <key>CFBundleIconFile</key>
     <string>AppIcon</string>
     <key>CFBundleIdentifier</key>

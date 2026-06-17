@@ -1,0 +1,10 @@
+#!/bin/bash
+# ──────────────────────────────────────────────────────────────
+# macOS OCX — Main Entry Point (CFBundleExecutable)
+#
+# This is the executable that macOS Launch Services runs
+# when you double-click the app icon.
+#
+# It launches the AppleScript native window wrapper.
+# ──────────────────────────────────────────────────────────────
+exec /usr/bin/osascript "$(dirname "$0")/entry.applescript"
