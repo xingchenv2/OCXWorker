@@ -1,10 +1,201 @@
 #!/bin/bash
 # ──────────────────────────────────────────────────────────────
-# macOS OCX — Main Entry Point (CFBundleExecutable)
+# macOS OCX — Main Launcher (CFBundleExecutable)
 #
-# This is the executable that macOS Launch Services runs
-# when you double-click the app icon.
+# Double-click → starts backend → opens native in-app window.
+# Zero external dependencies. Works on every Mac out of the box.
 #
-# It launches the AppleScript native window wrapper.
+# Native window approach:
+#   First run: auto-compiles Window.applet via osacompile (built-in, ~1s)
+#   Then: launches Window.applet which creates WKWebView native window
+#   Fallback: if compilation fails, uses Safari in app mode
 # ──────────────────────────────────────────────────────────────
-exec /usr/bin/osascript "$(dirname "$0")/entry.applescript"
+set -uo pipefail
+
+APP_NAME="macOS OCX"
+SERVER_PORT=8818
+BUNDLE="$(cd "$(dirname "$0")/.." && pwd)"
+RESOURCES="${BUNDLE}/Resources"
+MACOS="${BUNDLE}/MacOS"
+
+APP_DIR="${RESOURCES}/app"
+DATA_DIR="${RESOURCES}/data"
+KEYS_DIR="${DATA_DIR}/keys"
+LOG_DIR="${DATA_DIR}/logs"
+BACKUP_DIR="${DATA_DIR}/backups"
+DB_FILE="${DATA_DIR}/ocx-worker.db"
+COMPAT_DIR="${RESOURCES}/compat-bin"
+JAR_FILE="${APP_DIR}/ocx-worker.jar"
+SCHEMA_FILE="${APP_DIR}/schema-sqlite.sql"
+
+# ── Setup logging ──────────────────────────────────────────────
+mkdir -p "$LOG_DIR" "$KEYS_DIR" "$BACKUP_DIR"
+LOG_FILE="${LOG_DIR}/launch.log"
+
+log() { echo "[$(date '+%Y-%m-%d %H:%M:%S')] $*" >> "$LOG_FILE"; }
+log "═══════════════════════════════════════════"
+log "$APP_NAME starting..."
+
+# ── Step 1: First-run — compile native window via osacompile ──
+# osacompile is built into every macOS (no Xcode needed).
+# It compiles our AppleScript + WebKit code into a proper .applet
+# that has a working Cocoa event loop and stay-open behavior.
+WINDOW_APP="${RESOURCES}/Window.applet"
+
+if [ ! -d "$WINDOW_APP" ]; then
+    log "First run: compiling native window..."
+    
+    # Create a stay-open AppleScript applet
+    # The applet: creates NSWindow + WKWebView, stays open until window closes
+    /usr/bin/osacompile -x -o "$WINDOW_APP" "${MACOS}/entry.applescript" >> "$LOG_FILE" 2>&1
+    
+    if [ -d "$WINDOW_APP" ]; then
+        log "Window applet compiled OK"
+        # Patch the compiled applet's Info.plist to stay open
+        /usr/bin/plutil -replace LSUIElement -bool NO "$WINDOW_APP/Contents/Info.plist" 2>/dev/null || true
+    else
+        log "WARNING: osacompile failed, will use Safari fallback"
+        WINDOW_APP=""
+    fi
+fi
+
+# ── Step 2: Detect JRE ────────────────────────────────────────
+ARCH="$(uname -m)"
+case "$ARCH" in
+    arm64|aarch64)  RUNTIME_DIR="${RESOURCES}/runtime-arm64" ;;
+    x86_64|x64)     RUNTIME_DIR="${RESOURCES}/runtime-x64" ;;
+    *)              RUNTIME_DIR="${RESOURCES}/runtime-arm64" ;;
+esac
+
+JAVA=""
+for candidate in \
+    "$RUNTIME_DIR"/*/zulu-*.jre/Contents/Home/bin/java \
+    "$RUNTIME_DIR"/*/Contents/Home/bin/java \
+    "$RUNTIME_DIR"/*/Home/bin/java; do
+    if [ -x "$candidate" ]; then
+        JAVA="$candidate"
+        break
+    fi
+done
+
+if [ -z "$JAVA" ] || [ ! -x "$JAVA" ]; then
+    if command -v java &>/dev/null; then
+        JAVA="$(command -v java)"
+        log "Using system Java"
+    else
+        log "FATAL: No Java found!"
+        /usr/bin/osascript -e "display dialog \"macOS OCX 无法启动\\n\\n未找到 Java 运行时\\n请重新下载完整安装包\" with title \"$APP_NAME\" buttons {\"OK\"} default button \"OK\" with icon stop" 2>/dev/null
+        exit 1
+    fi
+fi
+
+log "Java: $JAVA ($ARCH)"
+
+# ── Step 3: Setup data dirs + compat ──────────────────────────
+export PATH="${COMPAT_DIR}:${PATH}"
+chmod 700 "$DATA_DIR" 2>/dev/null || true
+chmod 700 "$KEYS_DIR" 2>/dev/null || true
+[ -f "$DB_FILE" ] && chmod 600 "$DB_FILE" 2>/dev/null || true
+
+# ── Step 4: Initialize SQLite ─────────────────────────────────
+if [ ! -f "$DB_FILE" ]; then
+    SQLITE3="$(command -v sqlite3 2>/dev/null || true)"
+    if [ -n "$SQLITE3" ] && [ -f "$SCHEMA_FILE" ]; then
+        log "Initializing SQLite..."
+        "$SQLITE3" "$DB_FILE" < "$SCHEMA_FILE"
+        chmod 600 "$DB_FILE"
+        log "Database created"
+    fi
+fi
+
+# ── Step 5: Start Spring Boot backend ─────────────────────────
+log "Starting backend on :$SERVER_PORT..."
+
+"$JAVA" \
+    -Dloader.main=com.ociworker.OciWorkerApplication \
+    -Dloader.path="${APP_DIR}/" \
+    -cp "$JAR_FILE" \
+    org.springframework.boot.loader.launch.PropertiesLauncher \
+    --spring.datasource.driver-class-name=org.sqlite.JDBC \
+    --spring.datasource.url="jdbc:sqlite:${DB_FILE}?journal_mode=WAL&busy_timeout=5000&foreign_keys=on" \
+    --spring.datasource.username=sa \
+    --spring.datasource.password= \
+    --spring.sql.init.mode=always \
+    --spring.sql.init.schema-locations=classpath:schema-sqlite.sql \
+    --spring.sql.init.continue-on-error=true \
+    --server.port="$SERVER_PORT" \
+    --oci-cfg.key-dir-path="$KEYS_DIR" \
+    ${OCX_EXTRA_JAVA_OPTS:-} \
+    >> "${LOG_DIR}/backend.log" 2>&1 &
+
+BACKEND_PID=$!
+log "Backend PID: $BACKEND_PID"
+
+# ── Cleanup ────────────────────────────────────────────────────
+cleanup() {
+    log "Shutting down..."
+    kill $BACKEND_PID 2>/dev/null || true
+    wait $BACKEND_PID 2>/dev/null || true
+    log "Goodbye"
+}
+trap cleanup EXIT
+
+# ── Step 6: Wait for backend ready ────────────────────────────
+log "Waiting for backend..."
+ATTEMPTS=0
+MAX_ATTEMPTS=90
+
+while [ $ATTEMPTS -lt $MAX_ATTEMPTS ]; do
+    ATTEMPTS=$((ATTEMPTS + 1))
+    HTTP_CODE=$(curl -s -o /dev/null -w '%{http_code}' "http://localhost:$SERVER_PORT" 2>/dev/null || echo "000")
+    if echo "$HTTP_CODE" | grep -qE '^[23]'; then
+        log "Backend ready! (HTTP $HTTP_CODE, ${ATTEMPTS}s)"
+        break
+    fi
+    sleep 1
+done
+
+if [ $ATTEMPTS -ge $MAX_ATTEMPTS ]; then
+    log "FATAL: Backend startup timeout (${MAX_ATTEMPTS}s)"
+    /usr/bin/osascript -e "display dialog \"macOS OCX 启动失败\\n\\n服务启动超时，请查看日志：\\n${LOG_DIR}/backend.log\" with title \"$APP_NAME\" buttons {\"OK\"} default button \"OK\" with icon stop" 2>/dev/null
+    exit 1
+fi
+
+# ── Step 7: Open native window ─────────────────────────────────
+APP_URL="http://localhost:$SERVER_PORT"
+
+if [ -d "$WINDOW_APP" ]; then
+    # Launch the compiled applet — it creates WKWebView native window
+    log "Launching native window applet..."
+    open "$WINDOW_APP"
+    
+    # Wait until the applet exits (user closed window)
+    log "App running. Close window to exit."
+    while true; do
+        if ! pgrep -f "Window.applet/Contents/MacOS/applet" >/dev/null 2>&1; then
+            log "Window closed, exiting..."
+            break
+        fi
+        # Also check if backend died
+        if ! kill -0 $BACKEND_PID 2>/dev/null; then
+            log "Backend died, exiting..."
+            break
+        fi
+        sleep 2
+    done
+else
+    # ── Safari Fallback ───────────────────────────────────────
+    log "Opening Safari window (app mode)..."
+    /usr/bin/osascript -e "
+tell application \"Safari\"
+    activate
+    set w to make new document with properties {URL:\"${APP_URL}\"}
+end tell
+" 2>/dev/null
+    
+    log "App running in Safari mode. Ctrl+C to exit."
+    # Keep alive while backend runs
+    wait $BACKEND_PID 2>/dev/null || true
+fi
+
+log "Exiting..."
