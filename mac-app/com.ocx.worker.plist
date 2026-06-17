@@ -3,14 +3,13 @@
 <!--
   com.ocx.worker.plist — macOS LaunchDaemon for OCX Worker
   
+  Self-contained: all data inside /Applications/OCX Worker.app/Contents/Resources/data/
+  
   Install:  sudo cp com.ocx.worker.plist /Library/LaunchDaemons/
-            sudo launchctl load -w /Library/LaunchDaemons/com.ocx.worker.plist
+           sudo launchctl load -w /Library/LaunchDaemons/com.ocx.worker.plist
   
   Uninstall: sudo launchctl unload /Library/LaunchDaemons/com.ocx.worker.plist
              sudo rm /Library/LaunchDaemons/com.ocx.worker.plist
-  
-  This runs OCX Worker as a background service on macOS,
-  equivalent to the systemd unit on Linux.
 -->
 <plist version="1.0">
 <dict>
@@ -29,10 +28,10 @@
     <true/>
 
     <key>StandardOutPath</key>
-    <string>/tmp/ocx-worker-stdout.log</string>
+    <string>/Applications/OCX Worker.app/Contents/Resources/data/logs/launchd-stdout.log</string>
 
     <key>StandardErrorPath</key>
-    <string>/tmp/ocx-worker-stderr.log</string>
+    <string>/Applications/OCX Worker.app/Contents/Resources/data/logs/launchd-stderr.log</string>
 
     <key>EnvironmentVariables</key>
     <dict>

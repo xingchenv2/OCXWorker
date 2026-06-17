@@ -1,142 +1,123 @@
 #!/bin/bash
 # ──────────────────────────────────────────────────────────────
-# launch.sh — OCX Worker macOS App Launcher
+# launch.sh — OCX Worker macOS App Launcher (Self-Contained)
 #
-# This script:
-# 1. Resolves the app bundle directory
-# 2. Injects compat-bin/ into PATH (overrides Linux commands)
-# 3. Sets up macOS-specific directories and config
-# 4. Starts a local MySQL instance (via Homebrew or bundled)
-# 5. Launches the JAR with the bundled JRE
+# Design: ALL data stays inside the app bundle.
+#         No external files/dirs created without user consent.
+#         SQLite replaces MySQL — zero external dependencies.
 # ──────────────────────────────────────────────────────────────
 set -euo pipefail
 
 # ── Resolve app bundle paths ──────────────────────────────────
-# When running from .app bundle:  Contents/MacOS/launch.sh
-# When running from dev:          mac-app/launch.sh
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 
 if [ -f "${SCRIPT_DIR}/../Resources/app/ocx-worker.jar" ]; then
     # Running from .app bundle
-    APP_RESOURCES="${SCRIPT_DIR}/../Resources"
-    APP_DIR="${SCRIPT_DIR}/.."
-    JAR_DIR="${APP_RESOURCES}/app"
-    RUNTIME_DIR="${APP_RESOURCES}/runtime/Contents/Home"
-    COMPAT_DIR="${APP_RESOURCES}/compat-bin"
+    RESOURCES="${SCRIPT_DIR}/../Resources"
+    JAR_DIR="${RESOURCES}/app"
+    RUNTIME_DIR="${RESOURCES}/runtime/Contents/Home"
+    COMPAT_DIR="${RESOURCES}/compat-bin"
+    # Self-contained data directory INSIDE the app bundle
+    DATA_DIR="${RESOURCES}/data"
 else
     # Running from development directory
-    APP_RESOURCES="${SCRIPT_DIR}"
-    APP_DIR="${SCRIPT_DIR}"
+    RESOURCES="${SCRIPT_DIR}"
     JAR_DIR="${SCRIPT_DIR}"
-    RUNTIME_DIR=""  # Use system java
+    RUNTIME_DIR=""
     COMPAT_DIR="${SCRIPT_DIR}/compat-bin"
+    DATA_DIR="${SCRIPT_DIR}/data"
 fi
 
 JAR_FILE="${JAR_DIR}/ocx-worker.jar"
-
-# ── macOS Data Directory ──────────────────────────────────────
-DATA_DIR="${HOME}/Library/Application Support/OCX Worker"
+DB_FILE="${DATA_DIR}/ocx-worker.db"
 KEYS_DIR="${DATA_DIR}/keys"
-LOG_DIR="${HOME}/Library/Logs/OCX Worker"
+LOG_DIR="${DATA_DIR}/logs"
+BACKUP_DIR="${DATA_DIR}/backups"
 
-mkdir -p "$DATA_DIR" "$KEYS_DIR" "$LOG_DIR"
+# ── Create data directories (all inside app bundle) ──────────
+mkdir -p "$DATA_DIR" "$KEYS_DIR" "$LOG_DIR" "$BACKUP_DIR"
+
+# ── Secure file permissions ──────────────────────────────────
+chmod 700 "$DATA_DIR"
+chmod 600 "$DB_FILE" 2>/dev/null || true
+chmod 700 "$KEYS_DIR"
 
 # ── Inject compat-bin into PATH (priority) ────────────────────
 export PATH="${COMPAT_DIR}:${PATH}"
 
 # ── macOS-specific environment variables ──────────────────────
-# Tell the Java app where to store keys on Mac
 export OCX_KEY_DIR_PATH="$KEYS_DIR"
 export OCX_LOG_DIR="$LOG_DIR"
-# Override JAR path for SystemService (auto-update)
 export OCX_JAR_PATH="$JAR_FILE"
+export OCX_DATA_DIR="$DATA_DIR"
 
 # ── Determine Java command ───────────────────────────────────
 if [ -n "$RUNTIME_DIR" ] && [ -x "${RUNTIME_DIR}/bin/java" ]; then
     JAVA="${RUNTIME_DIR}/bin/java"
 else
-    # Fall back to system Java
     JAVA="$(command -v java 2>/dev/null || echo "")"
     if [ -z "$JAVA" ]; then
-        echo "❌ Java 21+ not found." >&2
-        echo "   Install with: brew install openjdk@21" >&2
-        echo "   Or re-run the installer to bundle a JRE." >&2
-        #
-        # Show a macOS alert dialog
         if command -v osascript &>/dev/null; then
             osascript -e 'display dialog "OCX Worker requires Java 21+\n\nInstall with:\nbrew install openjdk@21\n\nOr download from:\nhttps://adoptium.net" with title "OCX Worker — Java Not Found" buttons {"OK"} default button "OK" with icon stop'
+        else
+            echo "❌ Java 21+ not found. Install: brew install openjdk@21" >&2
         fi
         exit 1
     fi
 fi
 
-# ── Check / Start MySQL ───────────────────────────────────────
-check_mysql() {
-    # Try connecting on localhost:3306
-    if command -v mysql &>/dev/null; then
-        mysql -h 127.0.0.1 -P 3306 -u root -e "SELECT 1" &>/dev/null
-        return $?
-    fi
-    # Fallback: try netcat
-    if command -v nc &>/dev/null; then
-        nc -z 127.0.0.1 3306 2>/dev/null
-        return $?
-    fi
-    # Can't check, assume it's running
-    return 0
-}
+# ── Initialize SQLite database (if first run) ────────────────
+if [ ! -f "$DB_FILE" ]; then
+    echo "🗄️  Initializing SQLite database (first run)..."
 
-if ! check_mysql; then
-    echo "⚠️  MySQL not detected on localhost:3306" >&2
-    # Try starting Homebrew MySQL
-    if [ -f /opt/homebrew/opt/mysql/support-files/mysql.server ]; then
-        /opt/homebrew/opt/mysql/support-files/mysql.server start 2>/dev/null || true
-    elif [ -f /usr/local/opt/mysql/support-files/mysql.server ]; then
-        /usr/local/opt/mysql/support-files/mysql.server start 2>/dev/null || true
+    # Find SQLite3 binary
+    SQLITE3=""
+    if command -v sqlite3 &>/dev/null; then
+        SQLITE3="$(command -v sqlite3)"
+    elif [ -x "${RESOURCES}/sqlite3" ]; then
+        SQLITE3="${RESOURCES}/sqlite3"
+    elif [ -x "/usr/bin/sqlite3" ]; then
+        SQLITE3="/usr/bin/sqlite3"
     fi
-    sleep 2
-    if ! check_mysql; then
-        echo "❌ MySQL is not running." >&2
-        echo "   Install with: brew install mysql" >&2
-        echo "   Then start:   brew services start mysql" >&2
-        if command -v osascript &>/dev/null; then
-            osascript -e 'display dialog "OCX Worker requires MySQL\n\nInstall with:\nbrew install mysql\nbrew services start mysql" with title "OCX Worker — MySQL Not Found" buttons {"OK"} default button "OK" with icon caution'
-        fi
-        exit 1
+
+    # Check for bundled schema file
+    SCHEMA_FILE=""
+    if [ -f "${RESOURCES}/app/schema-sqlite.sql" ]; then
+        SCHEMA_FILE="${RESOURCES}/app/schema-sqlite.sql"
+    elif [ -f "${SCRIPT_DIR}/schema-sqlite.sql" ]; then
+        SCHEMA_FILE="${SCRIPT_DIR}/schema-sqlite.sql"
+    fi
+
+    if [ -n "$SQLITE3" ] && [ -n "$SCHEMA_FILE" ] && [ -f "$SCHEMA_FILE" ]; then
+        "$SQLITE3" "$DB_FILE" < "$SCHEMA_FILE"
+        chmod 600 "$DB_FILE"
+        echo "✅ Database initialized: $DB_FILE"
+    else
+        echo "ℹ️  SQLite3 not found on system. Database will be auto-created by JDBC on first launch."
+        echo "   (Spring Boot will use schema-sqlite.sql via spring.sql.init)"
     fi
 fi
 
-# ── Create database & user if not exists ──────────────────────
-if command -v mysql &>/dev/null; then
-    mysql -h 127.0.0.1 -u root -e \
-        "CREATE DATABASE IF NOT EXISTS oci_worker CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;
-         CREATE USER IF NOT EXISTS 'ocxworker'@'localhost' IDENTIFIED BY 'ocxworker123';
-         GRANT ALL PRIVILEGES ON oci_worker.* TO 'ocxworker'@'localhost';
-         FLUSH PRIVILEGES;" 2>/dev/null || true
-fi
-
-# ── SSH config fix for macOS ──────────────────────────────────
-# macOS sshd config is at /etc/ssh/sshd_config (no sshd_config.d/)
-# Create the compat symlink so Linux-style paths work
-if [ ! -d /etc/ssh/sshd_config.d ]; then
-    # We can't mkdir /etc/ssh/ without sudo; the compat script will handle it
-    export MAC_SSH_CONFIG_MODE="append"
-fi
-
-# ── Launch the JAR ────────────────────────────────────────────
-echo "🚀 Starting OCX Worker..."
-echo "   JAR:    $JAR_FILE"
-echo "   Java:   $JAVA"
-echo "   Data:   $DATA_DIR"
-echo "   Keys:   $KEYS_DIR"
-echo "   Compat: $COMPAT_DIR"
+# ── Launch the JAR with SQLite config ─────────────────────────
+echo "🚀 Starting OCX Worker (Self-Contained Mode)..."
+echo "   JAR:     $JAR_FILE"
+echo "   Java:    $JAVA"
+echo "   Data:    $DATA_DIR"
+echo "   DB:      $DB_FILE"
+echo "   Keys:    $KEYS_DIR"
+echo "   Logs:    $LOG_DIR"
+echo "   Compat:  $COMPAT_DIR"
 echo ""
 
 exec "$JAVA" \
     -jar "$JAR_FILE" \
-    --spring.datasource.url="jdbc:mysql://localhost:3306/oci_worker?useUnicode=true&characterEncoding=utf8&useSSL=false&serverTimezone=Asia/Shanghai&allowPublicKeyRetrieval=true" \
-    --spring.datasource.username=ocxworker \
-    --spring.datasource.password=ocxworker123 \
+    --spring.datasource.driver-class-name=org.sqlite.JDBC \
+    --spring.datasource.url="jdbc:sqlite:${DB_FILE}?journal_mode=WAL&busy_timeout=5000&foreign_keys=on" \
+    --spring.datasource.username=sa \
+    --spring.datasource.password= \
+    --spring.sql.init.mode=always \
+    --spring.sql.init.schema-locations=classpath:schema-sqlite.sql \
+    --spring.sql.init.continue-on-error=true \
     --oci-cfg.key-dir-path="$KEYS_DIR" \
     ${OCX_EXTRA_JAVA_OPTS:-} \
     "$@"
