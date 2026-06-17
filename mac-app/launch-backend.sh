@@ -1,19 +1,16 @@
 #!/bin/bash
 # ──────────────────────────────────────────────────────────────
-# macOS OCX — Standalone Launcher (Fallback)
+# macOS OCX — Backend Launcher (called by Swift wrapper)
 #
-# This script launches the backend + opens browser.
-# The PRIMARY entry point is the Swift WebView wrapper (MacOSOCX)
-# which provides a native app window without needing a browser.
-#
-# Use this script only if the Swift binary fails to compile.
+# This script starts the Spring Boot backend in the background.
+# The Swift WebView wrapper calls this, then opens the UI window.
 # ──────────────────────────────────────────────────────────────
 set -euo pipefail
 
 APP_NAME="macOS OCX"
-APP_VERSION="2.0.1"
 SERVER_PORT=8818
 
+# ── Resolve bundle paths ──────────────────────────────────────
 BUNDLE="$(cd "$(dirname "$0")/.." && pwd)"
 RESOURCES="${BUNDLE}/Resources"
 
@@ -29,6 +26,7 @@ JAR_FILE="${APP_DIR}/ocx-worker.jar"
 SQLITE_JDBC="${APP_DIR}/sqlite-jdbc-3.45.1.0.jar"
 SCHEMA_FILE="${APP_DIR}/schema-sqlite.sql"
 
+# ── Detect CPU architecture → pick correct bundled JRE ───────
 ARCH="$(uname -m)"
 case "$ARCH" in
     arm64|aarch64)  RUNTIME_DIR="${RESOURCES}/runtime-arm64" ;;
@@ -36,6 +34,7 @@ case "$ARCH" in
     *)              RUNTIME_DIR="${RESOURCES}/runtime-arm64" ;;
 esac
 
+# Find JRE java binary
 JAVA=""
 for candidate in \
     "$RUNTIME_DIR"/*/zulu-*.jre/Contents/Home/bin/java \
@@ -52,20 +51,20 @@ if [ -z "$JAVA" ] || [ ! -x "$JAVA" ]; then
         JAVA="$(command -v java)"
     else
         echo "❌ No Java found!" >&2
-        if command -v osascript &>/dev/null; then
-            osascript -e "display dialog \"macOS OCX 无法启动\n\n未找到 Java 运行时，请重新下载完整安装包\" with title \"macOS OCX — 启动失败\" buttons {\"OK\"} default button \"OK\" with icon stop"
-        fi
         exit 1
     fi
 fi
 
+# ── Create data directories (all inside app bundle) ───────────
 mkdir -p "$DATA_DIR" "$KEYS_DIR" "$LOG_DIR" "$BACKUP_DIR"
 chmod 700 "$DATA_DIR" 2>/dev/null || true
 chmod 700 "$KEYS_DIR" 2>/dev/null || true
 [ -f "$DB_FILE" ] && chmod 600 "$DB_FILE" 2>/dev/null || true
 
+# ── Inject compat-bin into PATH ──────────────────────────────
 export PATH="${COMPAT_DIR}:${PATH}"
 
+# ── Initialize SQLite (first run) ─────────────────────────────
 if [ ! -f "$DB_FILE" ]; then
     SQLITE3="$(command -v sqlite3 2>/dev/null || true)"
     if [ -n "$SQLITE3" ] && [ -f "$SCHEMA_FILE" ]; then
@@ -74,14 +73,8 @@ if [ ! -f "$DB_FILE" ]; then
     fi
 fi
 
-echo "🚀 $APP_NAME v$APP_VERSION (Standalone Mode)"
-echo "   Java:   $JAVA ($ARCH)"
-echo "   DB:     $DB_FILE"
-echo "   URL:    http://localhost:$SERVER_PORT"
-echo ""
-
-# Launch backend in background
-"$JAVA" \
+# ── Launch Spring Boot (foreground — Swift wrapper manages this process) ──
+exec "$JAVA" \
     -Dloader.main=com.ociworker.OciWorkerApplication \
     -Dloader.path="${APP_DIR}/" \
     -cp "$JAR_FILE" \
@@ -96,20 +89,4 @@ echo ""
     --server.port="$SERVER_PORT" \
     --oci-cfg.key-dir-path="$KEYS_DIR" \
     ${OCX_EXTRA_JAVA_OPTS:-} \
-    "$@" &
-
-BACKEND_PID=$!
-
-# Wait for backend to be ready, then open browser
-echo "⏳ 等待服务启动..."
-for i in $(seq 1 60); do
-    if curl -s -o /dev/null -w ''"http_code:200" "http://localhost:$SERVER_PORT" 2>/dev/null | grep -q "200"; then
-        echo "✅ 服务已启动！打开 http://localhost:$SERVER_PORT"
-        open "http://localhost:$SERVER_PORT"
-        break
-    fi
-    sleep 1
-done
-
-# Wait for backend process
-wait $BACKEND_PID
+    "$@"
