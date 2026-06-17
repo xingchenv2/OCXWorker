@@ -16,14 +16,16 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 APP_NAME="macOS OCX"
-APP_VERSION="2.0.1"
+APP_VERSION="2.0.6"
 BUNDLE_ID="com.ocx.worker"
 SERVER_PORT=8818
 
 JAR_PATH=""
+BUILD_BOTH=false
 
 while [[ $# -gt 0 ]]; do
     case "$1" in
+        --both) BUILD_BOTH=true; shift ;;
         --*) echo "Unknown option: $1"; exit 1 ;;
         *) JAR_PATH="$1"; shift ;;
     esac
@@ -42,7 +44,7 @@ echo "════════════════════════�
 echo "  $APP_NAME v$APP_VERSION — Build"
 echo "═══════════════════════════════════════════"
 echo "  JAR:    $JAR_PATH"
-echo "  Mode:   AppleScriptObjC native window"
+echo "  Mode:   osacompile native window (auto-compile on first run)"
 echo ""
 
 # ── Clean ──────────────────────────────────────────────────────
@@ -53,6 +55,8 @@ mkdir -p "${APP_DIR}/Contents/Resources/data/keys"
 mkdir -p "${APP_DIR}/Contents/Resources/data/logs"
 mkdir -p "${APP_DIR}/Contents/Resources/data/backups"
 mkdir -p "${APP_DIR}/Contents/Resources/compat-bin"
+mkdir -p "${APP_DIR}/Contents/Resources/runtime-arm64"
+mkdir -p "${APP_DIR}/Contents/Resources/runtime-x64"
 
 # ── 1. Copy main entry point (MacOSOCX shell wrapper) ────────
 echo "📝 Setting up native window entry point..."
@@ -62,11 +66,6 @@ chmod +x "${APP_DIR}/Contents/MacOS/MacOSOCX"
 # ── 2. Copy AppleScript native window ──────────────────────────
 cp "${SCRIPT_DIR}/entry.applescript" "${APP_DIR}/Contents/MacOS/entry.applescript"
 chmod +x "${APP_DIR}/Contents/MacOS/entry.applescript"
-
-# ── 3. Copy backend launcher ───────────────────────────────────
-echo "📦 Copying backend launcher..."
-cp "${SCRIPT_DIR}/launch-backend.sh" "${APP_DIR}/Contents/MacOS/"
-chmod +x "${APP_DIR}/Contents/MacOS/launch-backend.sh"
 
 # ── 3. Copy JAR ────────────────────────────────────────────────
 echo "📦 Copying application JAR..."
@@ -132,26 +131,51 @@ cat > "${APP_DIR}/Contents/Info.plist" << PLISTEOF
 PLISTEOF
 
 # ── 7. Bundle JRE ──────────────────────────────────────────────
-ARCH="$(uname -m)"
-echo "📦 Looking for JRE 21 ($ARCH)..."
+build_arch() {
+    local ARCH="$1"  # arm64 or x64
+    local RUNTIME_DIR="${APP_DIR}/Contents/Resources/runtime-${ARCH}"
+    local CACHE_FILE=""
 
-JAVA_HOME_JRE="$(/usr/libexec/java_home -v 21 2>/dev/null || true)"
-RUNTIME_DIR="${APP_DIR}/Contents/Resources/runtime-${ARCH}"
+    # Try macOS java_home first (only works on macOS)
+    local JAVA_HOME_JRE="$(/usr/libexec/java_home -v 21 2>/dev/null || true)"
 
-if [ -n "$JAVA_HOME_JRE" ]; then
-    mkdir -p "$RUNTIME_DIR"
-    cp -R "$JAVA_HOME_JRE" "${RUNTIME_DIR}/Home"
-    echo "✅ JRE bundled from $JAVA_HOME_JRE"
-else
-    echo "⚠️  No JRE 21 found at JAVA_HOME. Checking cache..."
-    if [ -f "${SCRIPT_DIR}/cache/zulu-jre21-mac-${ARCH}.tar.gz" ]; then
+    if [ -n "$JAVA_HOME_JRE" ]; then
         mkdir -p "$RUNTIME_DIR"
-        tar xzf "${SCRIPT_DIR}/cache/zulu-jre21-mac-${ARCH}.tar.gz" -C "$RUNTIME_DIR"
-        echo "✅ JRE extracted from cache"
+        cp -R "$JAVA_HOME_JRE" "${RUNTIME_DIR}/Home"
+        echo "✅ JRE ($ARCH) from $JAVA_HOME_JRE"
     else
-        echo "❌ No JRE available! The app will require system Java."
-        echo "   Download: https://www.azul.com/downloads/?package=jre"
+        # Check multiple cache locations
+        for dir in "${SCRIPT_DIR}/cache" "${SCRIPT_DIR}/../cache" "/tmp/mac-prebundle"; do
+            if [ -f "${dir}/zulu-jre21-mac-${ARCH}.tar.gz" ]; then
+                CACHE_FILE="${dir}/zulu-jre21-mac-${ARCH}.tar.gz"
+                break
+            fi
+        done
+
+        if [ -n "$CACHE_FILE" ]; then
+            mkdir -p "$RUNTIME_DIR"
+            tar xzf "$CACHE_FILE" -C "$RUNTIME_DIR"
+            echo "✅ JRE ($ARCH) from cache"
+        else
+            echo "⚠️  No JRE for $ARCH. App needs system Java."
+        fi
     fi
+}
+
+if [ "$BUILD_BOTH" = true ]; then
+    echo "📦 Bundling both architectures..."
+    build_arch arm64
+    build_arch x64
+else
+    # Map Linux arch names to Apple
+    HOST_ARCH="$(uname -m)"
+    case "$HOST_ARCH" in
+        aarch64) APPLE_ARCH="arm64" ;;
+        x86_64)  APPLE_ARCH="x64" ;;
+        *)       APPLE_ARCH="$HOST_ARCH" ;;
+    esac
+    echo "📦 Bundling JRE 21 ($APPLE_ARCH)..."
+    build_arch "$APPLE_ARCH"
 fi
 
 # ── 8. Secure permissions ──────────────────────────────────────
@@ -165,17 +189,41 @@ echo "   Location: ${APP_DIR}"
 echo "   Size:    $(du -sh "$APP_DIR" | cut -f1)"
 echo ""
 echo "   双击 ${APP_NAME}.app 即可使用"
-echo "   ✅ 原生窗口（AppleScriptObjC + WKWebView）"
-echo "   ✅ 无需编译、无需 Xcode"
+echo "   ✅ 原生窗口（首次运行自动编译，之后直接使用）"
 echo "   ✅ 无需浏览器、无需安装 Java"
 
 # ── 9. Zip for distribution ────────────────────────────────────
-ZIP_NAME="macOS-OCX-${APP_VERSION}-mac-$(uname -m).zip"
-echo ""
-echo "📦 Creating distribution zip..."
-cd "$OUTPUT_DIR"
-zip -r -q "${SCRIPT_DIR}/${ZIP_NAME}" "${APP_NAME}.app"
-echo "✅ Zip: ${SCRIPT_DIR}/${ZIP_NAME} $(du -h "${SCRIPT_DIR}/${ZIP_NAME}" | cut -f1)"
+if [ "$BUILD_BOTH" = true ]; then
+    echo ""
+    echo "📦 Splitting into architecture-specific zips..."
+    for TARGET_ARCH in arm64 x64; do
+        SPLIT_DIR="${OUTPUT_DIR}-${TARGET_ARCH}"
+        mkdir -p "$SPLIT_DIR"
+        cp -R "${APP_DIR}" "${SPLIT_DIR}/${APP_NAME}.app"
+        # Remove opposite-arch JRE to save space
+        OTHER_ARCH="x64"
+        [ "$TARGET_ARCH" = "x64" ] && OTHER_ARCH="arm64"
+        rm -rf "${SPLIT_DIR}/${APP_NAME}.app/Contents/Resources/runtime-${OTHER_ARCH}"
+
+        ZIP_NAME="mac-${TARGET_ARCH}-v${APP_VERSION}.zip"
+        cd "$SPLIT_DIR"
+        zip -r -q "${SCRIPT_DIR}/${ZIP_NAME}" "${APP_NAME}.app"
+        echo "✅ $TARGET_ARCH: ${SCRIPT_DIR}/${ZIP_NAME} $(du -h "${SCRIPT_DIR}/${ZIP_NAME}" | cut -f1)"
+    done
+else
+    HOST_ARCH="$(uname -m)"
+    case "$HOST_ARCH" in
+        aarch64) ARCH_NAME="arm64" ;;
+        x86_64)  ARCH_NAME="x64" ;;
+        *)       ARCH_NAME="$HOST_ARCH" ;;
+    esac
+    ZIP_NAME="macOS-OCX-${APP_VERSION}-mac-${ARCH_NAME}.zip"
+    echo ""
+    echo "📦 Creating distribution zip..."
+    cd "$OUTPUT_DIR"
+    zip -r -q "${SCRIPT_DIR}/${ZIP_NAME}" "${APP_NAME}.app"
+    echo "✅ Zip: ${SCRIPT_DIR}/${ZIP_NAME} $(du -h "${SCRIPT_DIR}/${ZIP_NAME}" | cut -f1)"
+fi
 
 echo ""
 echo "═══════════════════════════════════════════"
