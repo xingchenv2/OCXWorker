@@ -16,7 +16,7 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 APP_NAME="macOS OCX"
-APP_VERSION="2.0.8"
+APP_VERSION="2.0.9"
 BUNDLE_ID="com.ocx.worker"
 SERVER_PORT=8818
 
@@ -66,6 +66,14 @@ chmod +x "${APP_DIR}/Contents/MacOS/MacOSOCX"
 # ── 2. Copy AppleScript native window ──────────────────────────
 cp "${SCRIPT_DIR}/entry.applescript" "${APP_DIR}/Contents/MacOS/entry.applescript"
 chmod +x "${APP_DIR}/Contents/MacOS/entry.applescript"
+
+# ── 2b. Copy app icon ──────────────────────────────────────────
+if [ -f "${SCRIPT_DIR}/AppIcon.icns" ]; then
+    cp "${SCRIPT_DIR}/AppIcon.icns" "${APP_DIR}/Contents/Resources/AppIcon.icns"
+    echo "🎨 App icon bundled"
+else
+    echo "⚠️  No AppIcon.icns found — app will use generic icon"
+fi
 
 # ── 3. Copy JAR ────────────────────────────────────────────────
 echo "📦 Copying application JAR..."
@@ -165,10 +173,20 @@ build_arch() {
         if [ -n "$CACHE_FILE" ]; then
             mkdir -p "$RUNTIME_DIR"
             tar xzf "$CACHE_FILE" -C "$RUNTIME_DIR"
-        # CRITICAL: Fix executable permissions after tar extract
+            # Strip root-level JRE duplicates (symlinks/binaries that duplicate zulu-21.jre/)
+            # This cuts JRE size ~50% and prevents zip from doubling the archive
+            local JRE_EXTRACTED
+            JRE_EXTRACTED="$(find "$RUNTIME_DIR" -maxdepth 1 -type d -name 'zulu*' | head -1)"
+            if [ -d "$JRE_EXTRACTED" ]; then
+                cd "$JRE_EXTRACTED"
+                # Remove root-level dirs that are duplicates of zulu-*.jre/Contents/Home/
+                rm -f bin conf lib legal release DISCLAIMER Welcome.html readme.txt
+                cd - > /dev/null
+            fi
+            # CRITICAL: Fix executable permissions after tar extract
             # Some tar implementations don't preserve +x on macOS
             chmod -R u+X "$RUNTIME_DIR" 2>/dev/null || true
-            echo "✅ JRE ($ARCH) from cache (permissions fixed)"
+            echo "✅ JRE ($ARCH) from cache (permissions fixed, duplicates stripped)"
         else
             echo "⚠️  No JRE for $ARCH. App needs system Java."
         fi
@@ -211,6 +229,7 @@ if [ "$BUILD_BOTH" = true ]; then
     echo "📦 Splitting into architecture-specific zips..."
     for TARGET_ARCH in arm64 x64; do
         SPLIT_DIR="${OUTPUT_DIR}-${TARGET_ARCH}"
+        rm -rf "$SPLIT_DIR"
         mkdir -p "$SPLIT_DIR"
         cp -R "${APP_DIR}" "${SPLIT_DIR}/${APP_NAME}.app"
         # Remove opposite-arch JRE to save space
@@ -220,8 +239,7 @@ if [ "$BUILD_BOTH" = true ]; then
 
         ZIP_NAME="mac-${TARGET_ARCH}-v${APP_VERSION}.zip"
         cd "$SPLIT_DIR"
-        # -X preserves Unix file permissions (critical for JRE binaries)
-        zip -r -X -q "${SCRIPT_DIR}/${ZIP_NAME}" "${APP_NAME}.app"
+        zip -r -y -q "${SCRIPT_DIR}/${ZIP_NAME}" "${APP_NAME}.app"
         echo "✅ $TARGET_ARCH: ${SCRIPT_DIR}/${ZIP_NAME} $(du -h "${SCRIPT_DIR}/${ZIP_NAME}" | cut -f1)"
     done
 else
@@ -235,8 +253,7 @@ else
     echo ""
     echo "📦 Creating distribution zip..."
     cd "$OUTPUT_DIR"
-    # -X preserves Unix file permissions (critical for JRE binaries)
-    zip -r -X -q "${SCRIPT_DIR}/${ZIP_NAME}" "${APP_NAME}.app"
+    zip -r -y -q "${SCRIPT_DIR}/${ZIP_NAME}" "${APP_NAME}.app"
     echo "✅ Zip: ${SCRIPT_DIR}/${ZIP_NAME} $(du -h "${SCRIPT_DIR}/${ZIP_NAME}" | cut -f1)"
 fi
 
