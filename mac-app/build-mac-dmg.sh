@@ -1,15 +1,16 @@
 #!/bin/bash
 # ──────────────────────────────────────────────────────────────
-# macOS OCX — Build Script
+# macOS OCX — Build Script (AppleScriptObjC Native Window)
 #
-# Creates a self-contained .app with:
-#   - Native macOS window (Swift WKWebView wrapper)
-#   - Bundled JRE 21 (user never installs Java)
-#   - SQLite (no MySQL needed)
-#   - All data inside app bundle
+# Creates a self-contained .app:
+#   entry.applescript → native NSWindow + WKWebView
+#   launch-backend.sh → Spring Boot backend
+#   Bundled JRE 21 + SQLite JDBC
 #
-# Run on macOS:
-#   ./build-mac-dmg.sh [--with-jre] /path/to/ocx-worker.jar
+# No compilation needed! AppleScript runs natively on every Mac.
+#
+# Usage (on macOS):
+#   ./build-mac-dmg.sh /path/to/ocx-worker.jar
 # ──────────────────────────────────────────────────────────────
 set -euo pipefail
 
@@ -19,19 +20,17 @@ APP_VERSION="2.0.1"
 BUNDLE_ID="com.ocx.worker"
 SERVER_PORT=8818
 
-WITH_JRE=false
 JAR_PATH=""
 
 while [[ $# -gt 0 ]]; do
     case "$1" in
-        --with-jre) WITH_JRE=true; shift ;;
         --*) echo "Unknown option: $1"; exit 1 ;;
         *) JAR_PATH="$1"; shift ;;
     esac
 done
 
 if [ -z "$JAR_PATH" ] || [ ! -f "$JAR_PATH" ]; then
-    echo "Usage: $0 [--with-jre] /path/to/ocx-worker.jar"
+    echo "Usage: $0 /path/to/ocx-worker.jar"
     exit 1
 fi
 
@@ -42,11 +41,11 @@ APP_DIR="${OUTPUT_DIR}/${APP_NAME}.app"
 echo "═══════════════════════════════════════════"
 echo "  $APP_NAME v$APP_VERSION — Build"
 echo "═══════════════════════════════════════════"
-echo "  JAR:   $JAR_PATH"
-echo "  JRE:   $WITH_JRE"
+echo "  JAR:    $JAR_PATH"
+echo "  Mode:   AppleScriptObjC native window"
 echo ""
 
-# ── Clean previous build ──────────────────────────────────────
+# ── Clean ──────────────────────────────────────────────────────
 rm -rf "$OUTPUT_DIR"
 mkdir -p "${APP_DIR}/Contents/MacOS"
 mkdir -p "${APP_DIR}/Contents/Resources/app"
@@ -55,35 +54,21 @@ mkdir -p "${APP_DIR}/Contents/Resources/data/logs"
 mkdir -p "${APP_DIR}/Contents/Resources/data/backups"
 mkdir -p "${APP_DIR}/Contents/Resources/compat-bin"
 
-# ── 1. Compile Swift WebView wrapper → native binary ──────────
-echo "🔨 Compiling Swift WebView wrapper..."
-SWIFT_SRC="${SCRIPT_DIR}/MacOSOCXWebView.swift"
-SWIFT_BIN="${APP_DIR}/Contents/MacOS/MacOSOCX"
+# ── 1. Copy entry point (AppleScript) ──────────────────────────
+echo "📝 Setting up AppleScript native window..."
+cp "${SCRIPT_DIR}/entry.applescript" "${APP_DIR}/Contents/MacOS/entry.applescript"
+chmod +x "${APP_DIR}/Contents/MacOS/entry.applescript"
 
-swiftc -o "$SWIFT_BIN" \
-    "$SWIFT_SRC" \
-    -framework Cocoa -framework WebKit \
-    -parse-as-library \
-    -Osize \
-    2>&1
-
-if [ $? -ne 0 ]; then
-    echo "❌ Swift compilation failed!"
-    exit 1
-fi
-chmod +x "$SWIFT_BIN"
-echo "✅ Swift binary: $(du -h "$SWIFT_BIN" | cut -f1)"
-
-# ── 2. Copy backend launcher script ───────────────────────────
+# ── 2. Copy backend launcher ───────────────────────────────────
 echo "📦 Copying backend launcher..."
 cp "${SCRIPT_DIR}/launch-backend.sh" "${APP_DIR}/Contents/MacOS/"
 chmod +x "${APP_DIR}/Contents/MacOS/launch-backend.sh"
 
-# ── 3. Copy main JAR ──────────────────────────────────────────
+# ── 3. Copy JAR ────────────────────────────────────────────────
 echo "📦 Copying application JAR..."
 cp "$JAR_PATH" "${APP_DIR}/Contents/Resources/app/ocx-worker.jar"
 
-# ── 4. Copy SQLite JDBC driver ────────────────────────────────
+# ── 4. Copy SQLite JDBC driver ─────────────────────────────────
 SQLITE_JDBC_VER="3.45.1.0"
 SQLITE_JDBC_URL="https://github.com/xerial/sqlite-jdbc/releases/download/${SQLITE_JDBC_VER}/sqlite-jdbc-${SQLITE_JDBC_VER}.jar"
 SQLITE_JDBC_DST="${APP_DIR}/Contents/Resources/app/sqlite-jdbc-${SQLITE_JDBC_VER}.jar"
@@ -97,15 +82,14 @@ else
     cp "${SCRIPT_DIR}/cache/sqlite-jdbc-${SQLITE_JDBC_VER}.jar" "$SQLITE_JDBC_DST"
 fi
 
-# ── 5. Copy schema & compat ───────────────────────────────────
+# ── 5. Copy schema + compat ────────────────────────────────────
 cp "${SCRIPT_DIR}/schema-sqlite.sql" "${APP_DIR}/Contents/Resources/app/"
 cp "${SCRIPT_DIR}/compat-bin/"* "${APP_DIR}/Contents/Resources/compat-bin/"
 chmod +x "${APP_DIR}/Contents/Resources/compat-bin/"*
 cp "${SCRIPT_DIR}/com.ocx.worker.plist" "${APP_DIR}/Contents/Resources/"
 
-# ── 6. Info.plist ─────────────────────────────────────────────
+# ── 6. Info.plist — CFBundleExecutable = entry.applescript ─────
 echo "📝 Writing Info.plist..."
-# CFBundleExecutable = MacOSOCX (the Swift binary, not launch.sh)
 cat > "${APP_DIR}/Contents/Info.plist" << PLISTEOF
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
@@ -116,7 +100,7 @@ cat > "${APP_DIR}/Contents/Info.plist" << PLISTEOF
     <key>CFBundleDisplayName</key>
     <string>${APP_NAME}</string>
     <key>CFBundleExecutable</key>
-    <string>MacOSOCX</string>
+    <string>entry.applescript</string>
     <key>CFBundleIconFile</key>
     <string>AppIcon</string>
     <key>CFBundleIdentifier</key>
@@ -143,23 +127,30 @@ cat > "${APP_DIR}/Contents/Info.plist" << PLISTEOF
 </plist>
 PLISTEOF
 
-# ── 7. Bundle JRE (if --with-jre) ────────────────────────────
-if $WITH_JRE; then
-    ARCH="$(uname -m)"
-    echo "📦 Bundling JRE 21 for $ARCH..."
-    RUNTIME_DIR="${APP_DIR}/Contents/Resources/runtime-${ARCH}"
+# ── 7. Bundle JRE ──────────────────────────────────────────────
+ARCH="$(uname -m)"
+echo "📦 Looking for JRE 21 ($ARCH)..."
 
-    JAVA_HOME_JRE="$(/usr/libexec/java_home -v 21 2>/dev/null || true)"
-    if [ -n "$JAVA_HOME_JRE" ]; then
+JAVA_HOME_JRE="$(/usr/libexec/java_home -v 21 2>/dev/null || true)"
+RUNTIME_DIR="${APP_DIR}/Contents/Resources/runtime-${ARCH}"
+
+if [ -n "$JAVA_HOME_JRE" ]; then
+    mkdir -p "$RUNTIME_DIR"
+    cp -R "$JAVA_HOME_JRE" "${RUNTIME_DIR}/Home"
+    echo "✅ JRE bundled from $JAVA_HOME_JRE"
+else
+    echo "⚠️  No JRE 21 found at JAVA_HOME. Checking cache..."
+    if [ -f "${SCRIPT_DIR}/cache/zulu-jre21-mac-${ARCH}.tar.gz" ]; then
         mkdir -p "$RUNTIME_DIR"
-        cp -R "$JAVA_HOME_JRE" "${RUNTIME_DIR}/Home"
+        tar xzf "${SCRIPT_DIR}/cache/zulu-jre21-mac-${ARCH}.tar.gz" -C "$RUNTIME_DIR"
+        echo "✅ JRE extracted from cache"
     else
-        echo "❌ No JRE 21 found! Install: brew install openjdk@21"
-        exit 1
+        echo "❌ No JRE available! The app will require system Java."
+        echo "   Download: https://www.azul.com/downloads/?package=jre"
     fi
 fi
 
-# ── 8. Secure permissions ─────────────────────────────────────
+# ── 8. Secure permissions ──────────────────────────────────────
 chmod 700 "${APP_DIR}/Contents/Resources/data" 2>/dev/null || true
 chmod 700 "${APP_DIR}/Contents/Resources/data/keys" 2>/dev/null || true
 
@@ -169,10 +160,12 @@ echo "✅ ${APP_NAME} v${APP_VERSION} built!"
 echo "   Location: ${APP_DIR}"
 echo "   Size:    $(du -sh "$APP_DIR" | cut -f1)"
 echo ""
-echo "   双击 ${APP_NAME}.app 即可直接使用"
-echo "   无需浏览器，无需安装 Java，无需安装 MySQL"
+echo "   双击 ${APP_NAME}.app 即可使用"
+echo "   ✅ 原生窗口（AppleScriptObjC + WKWebView）"
+echo "   ✅ 无需编译、无需 Xcode"
+echo "   ✅ 无需浏览器、无需安装 Java"
 
-# ── 9. Create zip (for distribution) ───────────────────────────
+# ── 9. Zip for distribution ────────────────────────────────────
 ZIP_NAME="macOS-OCX-${APP_VERSION}-mac-$(uname -m).zip"
 echo ""
 echo "📦 Creating distribution zip..."

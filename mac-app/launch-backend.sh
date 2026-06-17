@@ -1,16 +1,15 @@
 #!/bin/bash
 # ──────────────────────────────────────────────────────────────
-# macOS OCX — Backend Launcher (called by Swift wrapper)
+# macOS OCX — Backend Launcher
 #
-# This script starts the Spring Boot backend in the background.
-# The Swift WebView wrapper calls this, then opens the UI window.
+# Called by entry.applescript (native window mode).
+# Purely starts the Spring Boot backend — no UI logic here.
 # ──────────────────────────────────────────────────────────────
 set -euo pipefail
 
 APP_NAME="macOS OCX"
 SERVER_PORT=8818
 
-# ── Resolve bundle paths ──────────────────────────────────────
 BUNDLE="$(cd "$(dirname "$0")/.." && pwd)"
 RESOURCES="${BUNDLE}/Resources"
 
@@ -26,7 +25,7 @@ JAR_FILE="${APP_DIR}/ocx-worker.jar"
 SQLITE_JDBC="${APP_DIR}/sqlite-jdbc-3.45.1.0.jar"
 SCHEMA_FILE="${APP_DIR}/schema-sqlite.sql"
 
-# ── Detect CPU architecture → pick correct bundled JRE ───────
+# ── Detect architecture → pick JRE ────────────────────────────
 ARCH="$(uname -m)"
 case "$ARCH" in
     arm64|aarch64)  RUNTIME_DIR="${RESOURCES}/runtime-arm64" ;;
@@ -34,7 +33,6 @@ case "$ARCH" in
     *)              RUNTIME_DIR="${RESOURCES}/runtime-arm64" ;;
 esac
 
-# Find JRE java binary
 JAVA=""
 for candidate in \
     "$RUNTIME_DIR"/*/zulu-*.jre/Contents/Home/bin/java \
@@ -50,18 +48,21 @@ if [ -z "$JAVA" ] || [ ! -x "$JAVA" ]; then
     if command -v java &>/dev/null; then
         JAVA="$(command -v java)"
     else
-        echo "❌ No Java found!" >&2
+        echo "❌ No Java runtime found!" >&2
+        if command -v osascript &>/dev/null; then
+            osascript -e "display dialog \"macOS OCX 无法启动\\n\\n未找到 Java 运行时\\n请重新下载完整安装包\" with title \"macOS OCX — 启动失败\" buttons {\"OK\"} default button \"OK\" with icon stop" &
+        fi
         exit 1
     fi
 fi
 
-# ── Create data directories (all inside app bundle) ───────────
+# ── Create data directories (inside app bundle) ───────────────
 mkdir -p "$DATA_DIR" "$KEYS_DIR" "$LOG_DIR" "$BACKUP_DIR"
 chmod 700 "$DATA_DIR" 2>/dev/null || true
 chmod 700 "$KEYS_DIR" 2>/dev/null || true
 [ -f "$DB_FILE" ] && chmod 600 "$DB_FILE" 2>/dev/null || true
 
-# ── Inject compat-bin into PATH ──────────────────────────────
+# ── Inject compat-bin → PATH ──────────────────────────────────
 export PATH="${COMPAT_DIR}:${PATH}"
 
 # ── Initialize SQLite (first run) ─────────────────────────────
@@ -73,7 +74,8 @@ if [ ! -f "$DB_FILE" ]; then
     fi
 fi
 
-# ── Launch Spring Boot (foreground — Swift wrapper manages this process) ──
+# ── Launch Spring Boot (foreground) ───────────────────────────
+# AppleScript wrapper manages this process and can kill it
 exec "$JAVA" \
     -Dloader.main=com.ociworker.OciWorkerApplication \
     -Dloader.path="${APP_DIR}/" \

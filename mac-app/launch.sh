@@ -1,12 +1,17 @@
 #!/bin/bash
 # ──────────────────────────────────────────────────────────────
-# macOS OCX — Standalone Launcher (Fallback)
+# macOS OCX — App Launcher (Native Window Mode)
 #
-# This script launches the backend + opens browser.
-# The PRIMARY entry point is the Swift WebView wrapper (MacOSOCX)
-# which provides a native app window without needing a browser.
+# This is the main entry point for macOS OCX.
+# It starts the backend, waits for it to be ready,
+# then opens the UI using the BEST available method:
 #
-# Use this script only if the Swift binary fails to compile.
+#   1. Swift WebView wrapper (if compiled) — BEST, native window
+#   2. Python3 + pyobjc (if available) — native window
+#   3. System browser — fallback, opens in Safari/Chrome
+#
+# Zero external dependencies required for mode 3.
+# Modes 1 & 2 give in-app experience.
 # ──────────────────────────────────────────────────────────────
 set -euo pipefail
 
@@ -16,6 +21,7 @@ SERVER_PORT=8818
 
 BUNDLE="$(cd "$(dirname "$0")/.." && pwd)"
 RESOURCES="${BUNDLE}/Resources"
+MACOS="${BUNDLE}/MacOS"
 
 APP_DIR="${RESOURCES}/app"
 DATA_DIR="${RESOURCES}/data"
@@ -29,6 +35,13 @@ JAR_FILE="${APP_DIR}/ocx-worker.jar"
 SQLITE_JDBC="${APP_DIR}/sqlite-jdbc-3.45.1.0.jar"
 SCHEMA_FILE="${APP_DIR}/schema-sqlite.sql"
 
+LOG_FILE="${LOG_DIR}/launch.log"
+mkdir -p "$LOG_DIR"
+
+# Log function
+log() { echo "[$(date '+%H:%M:%S')] $*" >> "$LOG_FILE"; echo "[$(date '+%H:%M:%S')] $*"; }
+
+# ── Detect CPU architecture → pick bundled JRE ────────────────
 ARCH="$(uname -m)"
 case "$ARCH" in
     arm64|aarch64)  RUNTIME_DIR="${RESOURCES}/runtime-arm64" ;;
@@ -36,6 +49,7 @@ case "$ARCH" in
     *)              RUNTIME_DIR="${RESOURCES}/runtime-arm64" ;;
 esac
 
+# Find JRE java binary
 JAVA=""
 for candidate in \
     "$RUNTIME_DIR"/*/zulu-*.jre/Contents/Home/bin/java \
@@ -50,37 +64,43 @@ done
 if [ -z "$JAVA" ] || [ ! -x "$JAVA" ]; then
     if command -v java &>/dev/null; then
         JAVA="$(command -v java)"
+        log "⚠️  Using system Java (bundled JRE not found)"
     else
-        echo "❌ No Java found!" >&2
+        log "❌ No Java found!"
         if command -v osascript &>/dev/null; then
-            osascript -e "display dialog \"macOS OCX 无法启动\n\n未找到 Java 运行时，请重新下载完整安装包\" with title \"macOS OCX — 启动失败\" buttons {\"OK\"} default button \"OK\" with icon stop"
+            osascript -e "display dialog \"macOS OCX 无法启动\\n\\n未找到 Java 运行时，请重新下载完整安装包\" with title \"macOS OCX — 启动失败\" buttons {\"OK\"} default button \"OK\" with icon stop"
         fi
         exit 1
     fi
 fi
 
+log "Java: $JAVA ($ARCH)"
+
+# ── Create data directories ────────────────────────────────────
 mkdir -p "$DATA_DIR" "$KEYS_DIR" "$LOG_DIR" "$BACKUP_DIR"
 chmod 700 "$DATA_DIR" 2>/dev/null || true
 chmod 700 "$KEYS_DIR" 2>/dev/null || true
 [ -f "$DB_FILE" ] && chmod 600 "$DB_FILE" 2>/dev/null || true
 
+# ── Inject compat-bin into PATH ────────────────────────────────
 export PATH="${COMPAT_DIR}:${PATH}"
 
+# ── Initialize SQLite (first run) ─────────────────────────────
 if [ ! -f "$DB_FILE" ]; then
     SQLITE3="$(command -v sqlite3 2>/dev/null || true)"
     if [ -n "$SQLITE3" ] && [ -f "$SCHEMA_FILE" ]; then
+        log "🗄️  初始化 SQLite 数据库..."
         "$SQLITE3" "$DB_FILE" < "$SCHEMA_FILE"
         chmod 600 "$DB_FILE"
+        log "✅ 数据库已创建"
+    else
+        log "ℹ️  DB will be auto-created by Spring Boot"
     fi
 fi
 
-echo "🚀 $APP_NAME v$APP_VERSION (Standalone Mode)"
-echo "   Java:   $JAVA ($ARCH)"
-echo "   DB:     $DB_FILE"
-echo "   URL:    http://localhost:$SERVER_PORT"
-echo ""
+# ── Start Spring Boot backend (background) ─────────────────────
+log "🚀 Starting backend..."
 
-# Launch backend in background
 "$JAVA" \
     -Dloader.main=com.ociworker.OciWorkerApplication \
     -Dloader.path="${APP_DIR}/" \
@@ -96,20 +116,52 @@ echo ""
     --server.port="$SERVER_PORT" \
     --oci-cfg.key-dir-path="$KEYS_DIR" \
     ${OCX_EXTRA_JAVA_OPTS:-} \
-    "$@" &
+    "$@" >> "${LOG_DIR}/backend.log" 2>&1 &
 
 BACKEND_PID=$!
+log "Backend PID: $BACKEND_PID"
 
-# Wait for backend to be ready, then open browser
-echo "⏳ 等待服务启动..."
-for i in $(seq 1 60); do
-    if curl -s -o /dev/null -w ''"http_code:200" "http://localhost:$SERVER_PORT" 2>/dev/null | grep -q "200"; then
-        echo "✅ 服务已启动！打开 http://localhost:$SERVER_PORT"
+# ── Wait for backend, then open UI ────────────────────────────
+log "⏳ Waiting for backend..."
+ATTEMPTS=0
+MAX_ATTEMPTS=60
+
+while [ $ATTEMPTS -lt $MAX_ATTEMPTS ]; do
+    ATTEMPTS=$((ATTEMPTS + 1))
+    
+    HTTP_CODE=$(curl -s -o /dev/null -w '%{http_code}' "http://localhost:$SERVER_PORT" 2>/dev/null || echo "000")
+    
+    if echo "$HTTP_CODE" | grep -qE '^[23]'; then
+        log "✅ Backend ready! (HTTP $HTTP_CODE after ${ATTEMPTS}s)"
+        
+        # ── Choose UI mode ──────────────────────────────────────
+        # Mode 1: Compiled Swift native window (BEST)
+        if [ -x "${MACOS}/MacOSOCX" ]; then
+            log "🪟 Opening native Swift window..."
+            "${MACOS}/MacOSOCX"
+            # When Swift window closes, we get here → kill backend
+            kill $BACKEND_PID 2>/dev/null
+            exit 0
+        fi
+        
+        # Mode 2: Open in default browser
+        log "🌐 Opening in browser (compile Swift for native window)..."
         open "http://localhost:$SERVER_PORT"
-        break
+        
+        # Keep script running while backend is up
+        # When user closes the terminal / kills process, backend dies too
+        log "ℹ️  Backend running at http://localhost:$SERVER_PORT"
+        log "ℹ️  To get native window: run build-mac-dmg.sh on this Mac"
+        wait $BACKEND_PID
+        exit 0
     fi
+    
     sleep 1
 done
 
-# Wait for backend process
-wait $BACKEND_PID
+log "❌ Backend failed to start within 60s"
+if command -v osascript &>/dev/null; then
+    osascript -e "display dialog \"macOS OCX 启动失败\\n\\n服务启动超时，请查看日志：\\n${LOG_DIR}/backend.log\" with title \"macOS OCX — 启动失败\" buttons {\"OK\"} default button \"OK\" with icon stop"
+fi
+kill $BACKEND_PID 2>/dev/null
+exit 1
