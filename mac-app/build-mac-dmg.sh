@@ -16,7 +16,7 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 APP_NAME="macOS OCX"
-APP_VERSION="2.0.7"
+APP_VERSION="2.0.8"
 BUNDLE_ID="com.ocx.worker"
 SERVER_PORT=8818
 
@@ -165,7 +165,10 @@ build_arch() {
         if [ -n "$CACHE_FILE" ]; then
             mkdir -p "$RUNTIME_DIR"
             tar xzf "$CACHE_FILE" -C "$RUNTIME_DIR"
-            echo "✅ JRE ($ARCH) from cache"
+        # CRITICAL: Fix executable permissions after tar extract
+            # Some tar implementations don't preserve +x on macOS
+            chmod -R u+X "$RUNTIME_DIR" 2>/dev/null || true
+            echo "✅ JRE ($ARCH) from cache (permissions fixed)"
         else
             echo "⚠️  No JRE for $ARCH. App needs system Java."
         fi
@@ -217,7 +220,8 @@ if [ "$BUILD_BOTH" = true ]; then
 
         ZIP_NAME="mac-${TARGET_ARCH}-v${APP_VERSION}.zip"
         cd "$SPLIT_DIR"
-        zip -r -q "${SCRIPT_DIR}/${ZIP_NAME}" "${APP_NAME}.app"
+        # -X preserves Unix file permissions (critical for JRE binaries)
+        zip -r -X -q "${SCRIPT_DIR}/${ZIP_NAME}" "${APP_NAME}.app"
         echo "✅ $TARGET_ARCH: ${SCRIPT_DIR}/${ZIP_NAME} $(du -h "${SCRIPT_DIR}/${ZIP_NAME}" | cut -f1)"
     done
 else
@@ -231,7 +235,8 @@ else
     echo ""
     echo "📦 Creating distribution zip..."
     cd "$OUTPUT_DIR"
-    zip -r -q "${SCRIPT_DIR}/${ZIP_NAME}" "${APP_NAME}.app"
+    # -X preserves Unix file permissions (critical for JRE binaries)
+    zip -r -X -q "${SCRIPT_DIR}/${ZIP_NAME}" "${APP_NAME}.app"
     echo "✅ Zip: ${SCRIPT_DIR}/${ZIP_NAME} $(du -h "${SCRIPT_DIR}/${ZIP_NAME}" | cut -f1)"
 fi
 

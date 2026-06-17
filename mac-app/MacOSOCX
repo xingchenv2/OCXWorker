@@ -84,6 +84,15 @@ case "$ARCH" in
 esac
 
 JAVA=""
+
+# ── Fix JRE permissions (zip may strip +x) ───────────────────
+# macOS unzip often loses executable permissions.
+# We fix them before checking.
+if [ -d "$RUNTIME_DIR" ]; then
+    chmod -R u+X "$RUNTIME_DIR" 2>/dev/null || true
+    log "Fixed JRE permissions in $RUNTIME_DIR"
+fi
+
 for candidate in \
     "$RUNTIME_DIR"/*/zulu-*.jre/Contents/Home/bin/java \
     "$RUNTIME_DIR"/*/Contents/Home/bin/java \
@@ -94,6 +103,19 @@ for candidate in \
     fi
 done
 
+# Also check non-executable java — zip may have stripped +x
+if [ -z "$JAVA" ]; then
+    for candidate in \
+        "$RUNTIME_DIR"/*/zulu-*.jre/Contents/Home/bin/java \
+        "$RUNTIME_DIR"/*/Contents/Home/bin/java \
+        "$RUNTIME_DIR"/*/Home/bin/java; do
+        if [ -f "$candidate" ]; then
+            chmod +x "$candidate" 2>/dev/null && JAVA="$candidate"
+            [ -n "$JAVA" ] && break
+        fi
+    done
+fi
+
 # Also try resolving through the real .app path (not translocated)
 if [ -z "$JAVA" ] || [ ! -x "$JAVA" ]; then
     # App Translocation workaround: try finding JRE relative to
@@ -103,15 +125,29 @@ if [ -z "$JAVA" ] || [ ! -x "$JAVA" ]; then
         "${HOME}/Applications/macOS OCX.app" \
         "${HOME}/Desktop/macOS OCX.app"; do
         if [ -d "$alt_bundle" ]; then
+            ALT_RT="$alt_bundle/Contents/Resources/runtime-${ARCH}"
+            # Fix permissions for alternate bundle too
+            chmod -R u+X "$ALT_RT" 2>/dev/null || true
             for candidate in \
-                "$alt_bundle/Contents/Resources/runtime-${ARCH}"/*/zulu-*.jre/Contents/Home/bin/java \
-                "$alt_bundle/Contents/Resources/runtime-${ARCH}"/*/Contents/Home/bin/java \
-                "$alt_bundle/Contents/Resources/runtime-${ARCH}"/*/Home/bin/java; do
+                "$ALT_RT"/*/zulu-*.jre/Contents/Home/bin/java \
+                "$ALT_RT"/*/Contents/Home/bin/java \
+                "$ALT_RT"/*/Home/bin/java; do
                 if [ -x "$candidate" ]; then
                     JAVA="$candidate"
-                    RUNTIME_DIR="$alt_bundle/Contents/Resources/runtime-${ARCH}"
+                    RUNTIME_DIR="$ALT_RT"
                     log "JRE found at alternate bundle: $alt_bundle"
                     break 2
+                fi
+            done
+            # Also try non-executable (permission stripped by zip)
+            for candidate in \
+                "$ALT_RT"/*/zulu-*.jre/Contents/Home/bin/java \
+                "$ALT_RT"/*/Contents/Home/bin/java \
+                "$ALT_RT"/*/Home/bin/java; do
+                if [ -f "$candidate" ]; then
+                    chmod +x "$candidate" 2>/dev/null && JAVA="$candidate"
+                    RUNTIME_DIR="$ALT_RT"
+                    [ -n "$JAVA" ] && log "JRE found (fixed +x) at alternate bundle: $alt_bundle" && break 2
                 fi
             done
         fi
@@ -123,9 +159,19 @@ if [ -z "$JAVA" ] || [ ! -x "$JAVA" ]; then
         JAVA="$(command -v java)"
         log "Using system Java"
     else
-        log "FATAL: No Java found!"
-        /usr/bin/osascript -e "display dialog \"$APP_NAME 无法启动\\n\\n未找到 Java 运行时\\n请重新下载完整安装包\" with title \"$APP_NAME\" buttons {\"OK\"} default button \"OK\" with icon stop" 2>/dev/null
-        exit 1
+        # Last resort: find any java file in runtime dir and chmod it
+        LAST_RESORT="$(find "$RUNTIME_DIR" -name java -type f 2>/dev/null | head -1)"
+        if [ -n "$LAST_RESORT" ]; then
+            chmod +x "$LAST_RESORT" 2>/dev/null
+            JAVA="$LAST_RESORT"
+            log "JRE found via find+chmod: $LAST_RESORT"
+        else
+            log "FATAL: No Java found! RUNTIME_DIR=$RUNTIME_DIR"
+            log "FATAL: Directory contents:"
+            ls -laR "$RUNTIME_DIR" >> "$LOG_FILE" 2>/dev/null || log "FATAL: $RUNTIME_DIR does not exist"
+            /usr/bin/osascript -e "display dialog \"$APP_NAME 无法启动\\n\\n未找到 Java 运行时\\n请重新下载完整安装包\" with title \"$APP_NAME\" buttons {\"OK\"} default button \"OK\" with icon stop" 2>/dev/null
+            exit 1
+        fi
     fi
 fi
 
